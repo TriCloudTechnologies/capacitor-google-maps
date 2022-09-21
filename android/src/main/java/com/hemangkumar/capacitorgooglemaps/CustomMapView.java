@@ -2,16 +2,14 @@ package com.hemangkumar.capacitorgooglemaps;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
+import android.content.Context;
 import android.content.pm.PackageManager;
 import android.location.Location;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
 import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
-import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
-import androidx.core.util.Consumer;
 
 import com.getcapacitor.JSObject;
 import com.google.android.libraries.maps.CameraUpdate;
@@ -44,7 +42,7 @@ public class CustomMapView
         GoogleMap.OnCameraMoveListener,
         GoogleMap.OnCameraIdleListener
 {
-    private final AppCompatActivity activity;
+    private final Context context;
     private final CustomMapViewEvents customMapViewEvents;
 
     private final String id;
@@ -102,8 +100,8 @@ public class CustomMapView
     public MapCameraPosition mapCameraPosition;
     public MapPreferences mapPreferences;
 
-    public CustomMapView(@NonNull AppCompatActivity activity, CustomMapViewEvents customMapViewEvents) {
-        this.activity = activity;
+    public CustomMapView(@NonNull Context context, CustomMapViewEvents customMapViewEvents) {
+        this.context = context;
         this.customMapViewEvents = customMapViewEvents;
         this.id = UUID.randomUUID().toString();
     }
@@ -113,7 +111,7 @@ public class CustomMapView
     }
 
     private boolean hasPermission() {
-        return ActivityCompat.checkSelfPermission(activity, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED || ActivityCompat.checkSelfPermission(activity, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        return ActivityCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED || ActivityCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
     }
 
     @SuppressLint("MissingPermission")
@@ -357,7 +355,7 @@ public class CustomMapView
         GoogleMapOptions googleMapOptions = this.mapPreferences.generateGoogleMapOptions();
         googleMapOptions.camera(this.mapCameraPosition.cameraPosition);
 
-        mapView = new MapView(activity, googleMapOptions);
+        mapView = new MapView(context, googleMapOptions);
 
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(getScaledPixels(boundingRect.width), getScaledPixels(boundingRect.height));
         lp.topMargin = getScaledPixels(boundingRect.y);
@@ -428,7 +426,7 @@ public class CustomMapView
 
     private int getScaledPixels(float pixels) {
         // Get the screen's density scale
-        final float scale = activity.getResources().getDisplayMetrics().density;
+        final float scale = context.getResources().getDisplayMetrics().density;
         // Convert the dps to pixels, based on density scale
         return (int) (pixels * scale + 0.5f);
     }
@@ -446,18 +444,10 @@ public class CustomMapView
         markers.clear();
     }
 
-    public void addMarker(CustomMarker customMarker, @Nullable Consumer<Marker> consumer) {
-        customMarker.addToMap(
-            activity,
-            googleMap,
-            (marker) -> {
-                markers.put(customMarker.markerId, marker);
-
-                if (consumer != null) {
-                    consumer.accept(marker);
-                }
-            }
-        );
+    public Marker addMarker(CustomMarker customMarker) {
+        Marker marker = customMarker.addToMap(googleMap);
+        markers.put(customMarker.markerId, marker);
+        return marker;
     }
 
     public void removeMarker(String markerId) {
@@ -591,5 +581,76 @@ public class CustomMapView
 
         // return result
         return result;
+    }
+
+    public void addPolyline(final PluginCall call) {
+        final JSArray points = call.getArray("points", new JSArray());
+
+        getBridge().executeOnMainThread(new Runnable() {
+            @Override
+            public void run() {
+                PolylineOptions polylineOptions = new PolylineOptions();
+
+                for (int i = 0; i < points.length(); i++) {
+                    try {
+                        JSONObject point = points.getJSONObject(i);
+                        LatLng latLng = new LatLng(point.getDouble("latitude"), point.getDouble("longitude"));
+                        polylineOptions.add(latLng);
+                    } catch (JSONException e) {
+                        e.printStackTrace();
+                    }
+                }
+
+                googleMap.addPolyline(polylineOptions);
+
+                call.resolve();
+            }
+        });
+    }
+
+    public void addPolygon(final PluginCall call) {
+        final JSArray points = call.getArray("points", new JSArray());
+
+        getBridge().executeOnMainThread(new Runnable() {
+            @Override
+            public void run() {
+                PolygonOptions polygonOptions = new PolygonOptions();
+
+                for (int i = 0; i < points.length(); i++) {
+                    try {
+                        JSONObject point = points.getJSONObject(i);
+                        LatLng latLng = new LatLng(point.getDouble("latitude"), point.getDouble("longitude"));
+                        polygonOptions.add(latLng);
+                    } catch (JSONException e) {
+                        e.printStackTrace();
+                    }
+                }
+
+                googleMap.addPolygon(polygonOptions);
+                call.resolve();
+            }
+        });
+    }
+
+    public void addCircle(final PluginCall call) {
+        final int radius = call.getInt("radius", 0);
+        final JSONObject center = call.getObject("center", new JSObject());
+
+        getBridge().executeOnMainThread(new Runnable() {
+            @Override
+            public void run() {
+                CircleOptions circleOptions = new CircleOptions();
+                circleOptions.radius(radius);
+                try {
+                    circleOptions.center(new LatLng(center.getDouble("latitude"), center.getDouble("longitude")));
+                } catch (JSONException e) {
+                    e.printStackTrace();
+                }
+
+                googleMap.addCircle(circleOptions);
+
+                call.resolve();
+            }
+        });
     }
 }
