@@ -13,9 +13,10 @@ import {
   ElementFromPointResultOptions,
   AddMarkerOptions,
   AddMarkerResult,
-  AddMarkersOptions,
-  AddMarkersResult,
   RemoveMarkerOptions,
+  CircleOptions,
+  PolygonOptions,
+  PolylineOptions,
   // events
   DidTapInfoWindowCallback,
   DidCloseInfoWindowCallback,
@@ -67,9 +68,13 @@ export interface CapacitorGoogleMapsPlugin {
 
   addMarker(options: AddMarkerOptions): Promise<AddMarkerResult>;
 
-  addMarkers(options: AddMarkersOptions): Promise<AddMarkersResult>;
-
   removeMarker(options: RemoveMarkerOptions): Promise<void>;
+
+  addPolyline(options: PolylineOptions): Promise<void>;
+
+  addCircle(options: CircleOptions): Promise<void>;
+
+  addPolygon(options: PolygonOptions): Promise<void>;
 
   didTapInfoWindow(
     options: DefaultEventOptions,
