@@ -1,7 +1,6 @@
 import Foundation
 import Capacitor
 import GoogleMaps
-import SDWebImage
 
 @objc(CapacitorGoogleMaps)
 public class CapacitorGoogleMaps: CustomMapViewEvents {
@@ -74,7 +73,7 @@ public class CapacitorGoogleMaps: CustomMapViewEvents {
             self.customWebView?.customMapViews[customMapView.id] = customMapView
         }
     }
-
+    
     @objc func updateMap(_ call: CAPPluginCall) {
         let mapId: String = call.getString("mapId", "")
 
@@ -83,17 +82,34 @@ public class CapacitorGoogleMaps: CustomMapViewEvents {
                 call.reject("map not found")
                 return
             }
-
+            
             let preferences = call.getObject("preferences", JSObject());
             customMapView.mapPreferences.updateFromJSObject(preferences);
-
+            
             let result = customMapView.invalidateMap()
-
+            
             call.resolve(result)
         }
 
     }
 
+
+    @objc func removeMap(_ call: CAPPluginCall) {
+        let mapId: String = call.getString("mapId", "")
+
+        DispatchQueue.main.async {
+            guard let customMapView = self.customWebView?.customMapViews[mapId] else {
+                call.reject("map not found")
+                return
+            }
+            
+            (customMapView).view.removeFromSuperview()
+            self.customWebView?.customMapViews.removeValue(forKey: mapId)
+
+            call.resolve()
+        }
+    }
+    
     @objc func getMap(_ call: CAPPluginCall) {
         let mapId: String = call.getString("mapId", "")
 
@@ -102,10 +118,26 @@ public class CapacitorGoogleMaps: CustomMapViewEvents {
                 call.reject("map not found")
                 return
             }
-
+            
             let result = customMapView.getMap()
-
+            
             call.resolve(result)
+        }
+
+    }
+    
+    @objc func clearMap(_ call: CAPPluginCall) {
+        let mapId: String = call.getString("mapId", "")
+
+        DispatchQueue.main.async {
+            guard let customMapView = self.customWebView?.customMapViews[mapId] else {
+                call.reject("map not found")
+                return
+            }
+            
+            let result = customMapView.clearMap()
+            
+            call.resolve()
         }
 
     }
@@ -152,29 +184,95 @@ public class CapacitorGoogleMaps: CustomMapViewEvents {
             let position = call.getObject("position", JSObject())
             let preferences = call.getObject("preferences", JSObject())
 
-            let marker = self.addMarker([
+            self.addMarker([
                 "position": position,
                 "preferences": preferences
-            ], customMapView: customMapView)
-
-            call.resolve(CustomMarker.getResultForMarker(marker, mapId: mapId))
+            ], customMapView: customMapView) { marker in
+                call.resolve(CustomMarker.getResultForMarker(marker, mapId: mapId))
+            }
         }
     }
 
     @objc func addMarkers(_ call: CAPPluginCall) {
         let mapId: String = call.getString("mapId", "")
 
-        DispatchQueue.main.async {
-            guard let customMapView = self.customWebView?.customMapViews[mapId] else {
-                call.reject("map not found")
-                return
-            }
-
-            let markers = List<JSValue>(elements: call.getArray("markers", []))
-            self.addMarker(node: markers.first, customMapView: customMapView)
-
-            call.resolve()
+        guard let customMapView = self.customWebView?.customMapViews[mapId] else {
+            call.reject("map not found")
+            return
         }
+
+        if let markers = call.getArray("markers")?.capacitor.replacingNullValues() as? [JSObject?] {
+            // Group markers by icon url and size
+            let markersGroupedByIcon = Dictionary(grouping: markers) { (marker) -> String in
+                let preferences = marker?["preferences"] as? JSObject ?? JSObject()
+
+                if let icon = preferences["icon"] as? JSObject {
+                    if let url = icon["url"] as? String {
+                        let size = icon["size"] as? JSObject ?? JSObject()
+                        let resizeWidth = size["width"] as? Int ?? 30
+                        let resizeHeight = size["height"] as? Int ?? 30
+                        
+                        // Generate custom key based on the size,
+                        // so we can cache the resized variant of the image as well.
+                        let groupByKey = "\(url)\(resizeWidth)\(resizeHeight)"
+                        
+                        return groupByKey
+                    }
+                }
+                
+                return ""
+            }
+            
+            for markersGroup in markersGroupedByIcon {
+                // Get the icon for this group by using the first marker value
+                // (which should be the same as the following ones, since they are grouped by icon).
+                if let firstMarker = markersGroup.value[0] {
+                    let preferences = firstMarker["preferences"] as? JSObject ?? JSObject()
+
+                    if let icon = preferences["icon"] as? JSObject {
+                        if let url = icon["url"] as? String {
+                            let size = icon["size"] as? JSObject ?? JSObject()
+                            let resizeWidth = size["width"] as? Int ?? 30
+                            let resizeHeight = size["height"] as? Int ?? 30
+
+                            // Preload this icon into the cache.
+                            self.imageCache.image(at: url, resizeWidth: resizeWidth, resizeHeight: resizeHeight) { image in
+                                // Since the icon is already loaded,
+                                // it is now possible to quickly render all the markers with this icon.
+                                for marker in markersGroup.value {
+                                    let position = marker?["position"] as? JSObject ?? JSObject();
+                                    let preferences = marker?["preferences"] as? JSObject ?? JSObject();
+
+                                    self.addMarker([
+                                        "position": position,
+                                        "preferences": preferences
+                                    ], customMapView: customMapView) { marker in
+                                        // Image is loaded
+                                    }
+                                }
+                            }
+                            
+                            continue
+                        }
+                    }
+                }
+                
+                // Render all markers on the map without a custom icon attached to them.
+                for marker in markersGroup.value {
+                    let position = marker?["position"] as? JSObject ?? JSObject();
+                    let preferences = marker?["preferences"] as? JSObject ?? JSObject();
+
+                    self.addMarker([
+                        "position": position,
+                        "preferences": preferences
+                    ], customMapView: customMapView) { marker in
+                        // Image is loaded
+                    }
+                }
+            }
+        }
+
+        call.resolve()
     }
 
     @objc func removeMarker(_ call: CAPPluginCall) {
@@ -193,83 +291,6 @@ public class CapacitorGoogleMaps: CustomMapViewEvents {
         }
     }
 
-    @objc func addPolyline(_ call: CAPPluginCall) {
-
-        let points = call.getArray("points", JSObject())
-
-        DispatchQueue.main.async {
-
-            guard let customMapView = self.customWebView?.customMapViews[mapId] else {
-                call.reject("map not found")
-                return
-            }
-
-            let path = GMSMutablePath()
-
-            for point in points ?? [] {
-                let coords = CLLocationCoordinate2D(latitude: point["latitude"] as! CLLocationDegrees, longitude: point["longitude"] as! CLLocationDegrees)
-                path.add(coords)
-            }
-
-            let polyline = GMSPolyline(path: path)
-
-            polyline.map = customMapView.GMapView
-            call.resolve()
-        }
-    }
-
-    @objc func addPolygon(_ call: CAPPluginCall) {
-
-        let points = call.getArray("points", JSObject())
-
-        DispatchQueue.main.async {
-
-            guard let customMapView = self.customWebView?.customMapViews[mapId] else {
-                call.reject("map not found")
-                return
-            }
-
-            let path = GMSMutablePath()
-
-            for point in points ?? [] {
-                let coords = CLLocationCoordinate2D(
-                    latitude: point["latitude"] as! CLLocationDegrees,
-                    longitude: point["longitude"] as! CLLocationDegrees
-                )
-                path.add(coords)
-            }
-
-            let polygon = GMSPolygon(path: path)
-            polygon.map = customMapView.GMapView
-
-            call.resolve()
-        }
-    }
-
-    @objc func addCircle(_ call: CAPPluginCall) {
-        let radius = call.getDouble("radius") ?? 0.0
-
-        let center = call.getObject("center")
-
-        let coordinates = CLLocationCoordinate2D(
-            latitude: center?["latitude"] as! CLLocationDegrees,
-            longitude: center?["longitude"] as! CLLocationDegrees
-        )
-
-        DispatchQueue.main.async {
-            guard let customMapView = self.customWebView?.customMapViews[mapId] else {
-                call.reject("map not found")
-                return
-            }
-
-            let circleCenter = coordinates
-            let circle = GMSCircle(position: circleCenter, radius: radius)
-            circle.map = customMapView.GMapView
-
-            call.resolve()
-        }
-    }
-
     @objc func didTapInfoWindow(_ call: CAPPluginCall) {
         setCallbackIdForEvent(call: call, eventName: CustomMapView.EVENT_DID_TAP_INFO_WINDOW);
     }
@@ -285,23 +306,23 @@ public class CapacitorGoogleMaps: CustomMapViewEvents {
     @objc func didLongPressMap(_ call: CAPPluginCall) {
         setCallbackIdForEvent(call: call, eventName: CustomMapView.EVENT_DID_LONG_PRESS_MAP);
     }
-
+    
     @objc func didTapMarker(_ call: CAPPluginCall) {
         setCallbackIdForEvent(call: call, eventName: CustomMapView.EVENT_DID_TAP_MARKER);
     }
-
+    
     @objc func didBeginDraggingMarker(_ call: CAPPluginCall) {
         setCallbackIdForEvent(call: call, eventName: CustomMapView.EVENT_DID_BEGIN_DRAGGING_MARKER);
     }
-
+    
     @objc func didDragMarker(_ call: CAPPluginCall) {
         setCallbackIdForEvent(call: call, eventName: CustomMapView.EVENT_DID_DRAG_MARKER);
     }
-
+    
     @objc func didEndDraggingMarker(_ call: CAPPluginCall) {
         setCallbackIdForEvent(call: call, eventName: CustomMapView.EVENT_DID_END_DRAGGING_MARKER);
     }
-
+    
     @objc func didTapMyLocationButton(_ call: CAPPluginCall) {
         setCallbackIdForEvent(call: call, eventName: CustomMapView.EVENT_DID_TAP_MY_LOCATION_BUTTON);
     }
@@ -309,19 +330,19 @@ public class CapacitorGoogleMaps: CustomMapViewEvents {
     @objc func didTapMyLocationDot(_ call: CAPPluginCall) {
         setCallbackIdForEvent(call: call, eventName: CustomMapView.EVENT_DID_TAP_MY_LOCATION_DOT);
     }
-
+    
     @objc func didTapPoi(_ call: CAPPluginCall) {
         setCallbackIdForEvent(call: call, eventName: CustomMapView.EVENT_DID_TAP_POI);
     }
-
+    
     @objc func didBeginMovingCamera(_ call: CAPPluginCall) {
         setCallbackIdForEvent(call: call, eventName: CustomMapView.EVENT_DID_BEGIN_MOVING_CAMERA);
     }
-
+    
     @objc func didMoveCamera(_ call: CAPPluginCall) {
         setCallbackIdForEvent(call: call, eventName: CustomMapView.EVENT_DID_MOVE_CAMERA);
     }
-
+    
     @objc func didEndMovingCamera(_ call: CAPPluginCall) {
         setCallbackIdForEvent(call: call, eventName: CustomMapView.EVENT_DID_END_MOVING_CAMERA);
     }
@@ -358,37 +379,38 @@ public class CapacitorGoogleMaps: CustomMapViewEvents {
 }
 
 private extension CapacitorGoogleMaps {
-    func addMarker(_ markerData: JSObject, customMapView: CustomMapView) -> GMSMarker {
-        let marker = CustomMarker()
+    func addMarker(_ markerData: JSObject, customMapView: CustomMapView, completion: @escaping VoidReturnClosure<GMSMarker>) {
+        DispatchQueue.main.async {
+            let marker = CustomMarker()
 
-        marker.updateFromJSObject(markerData)
-        marker.map = customMapView.GMapView
+            marker.updateFromJSObject(markerData)
 
-        self.customMarkers[marker.id] = marker
+            self.customMarkers[marker.id] = marker
 
-        let preferences = markerData["preferences"] as? JSObject ?? JSObject()
+            let preferences = markerData["preferences"] as? JSObject ?? JSObject()
 
-        if let icon = preferences["icon"] as? JSObject {
-            if let url = icon["url"] as? String {
-                let resizeWidth = icon["width"] as? Int ?? 30
-                let resizeHeight = icon["height"] as? Int ?? 30
-                self.imageCache.image(at: url, resizeWidth: resizeWidth, resizeHeight: resizeHeight) { image in
-                    marker.icon = image
+            if let icon = preferences["icon"] as? JSObject {
+                if let url = icon["url"] as? String {
+                    let size = icon["size"] as? JSObject ?? JSObject()
+                    let resizeWidth = size["width"] as? Int ?? 30
+                    let resizeHeight = size["height"] as? Int ?? 30
+                    DispatchQueue.global(qos: .background).async {
+                        self.imageCache.image(at: url, resizeWidth: resizeWidth, resizeHeight: resizeHeight) { image in
+                            DispatchQueue.main.async {
+                                marker.icon = image
+                                marker.map = customMapView.GMapView
+                                completion(marker)
+                            }
+                        }
+                    }
+                    return
                 }
             }
+
+            marker.map = customMapView.GMapView
+
+            completion(marker)
         }
-
-        return marker
-    }
-
-    func addMarker(node: Node<JSValue>?,
-                   customMapView: CustomMapView) {
-        guard let node = node else { return }
-        let markerData = node.value as? JSObject ?? JSObject()
-
-        self.addMarker(markerData, customMapView: customMapView)
-
-        self.addMarker(node: node.next, customMapView: customMapView)
     }
 
     func setupWebView() {
@@ -404,6 +426,6 @@ private extension CapacitorGoogleMaps {
 
 extension CapacitorGoogleMaps: ImageCachable {
     var imageCache: ImageURLLoadable {
-        SDWebImageCache.shared
+        NativeImageCache.shared
     }
 }
